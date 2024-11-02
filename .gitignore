@@ -1,0 +1,6 @@
+notebooks/.DS_Store
+notebooks/.ipynb_checkpoints
+notebooks/__pycache__
+functions/.ipynb_checkpoints
+functions/.DS_Store
+functions/__pycache__
