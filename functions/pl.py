@@ -7,6 +7,7 @@ import pandas as pd
 import scanpy as sc
 import seaborn as sns
 from matplotlib.colors import to_rgb
+from sklearn.mixture import GaussianMixture
 
 def highlight_scatterplot(
     data: pd.DataFrame,
@@ -272,3 +273,116 @@ def _get_palette_dict(adata, key, pal=None):
     pal = dict(zip(cat, pal))
     return pal
 
+def scatterplot_correlation(data, X, Y, color, column=None, observation=None, X_name=None, Y_name=None, filename=None, title=None):
+    corr_vals = []
+    pvals = []
+
+    if observation is None:
+        subset = data
+    else:
+        subset = data[data[column] == observation]    
+    
+    for _, group in subset.groupby("well"):
+        if group[[X, Y]].dropna().shape[0] >= 2:  # Enough data points
+            try:
+                res = stats.pearsonr(group[X], group[Y])
+                corr_vals.append(res.statistic)
+                pvals.append(res.pvalue)
+            except Exception:
+                continue
+    
+    # Mean of well-level correlations
+    if corr_vals:
+        mean_r = np.mean(corr_vals)
+        mean_p = np.mean(pvals)
+    else:
+        mean_r = float("nan")
+        mean_p = float("nan")
+    
+    # Add regression line (over all data in the condition)
+    plt.figure(figsize=(4, 4))
+    ax=sns.regplot(data=subset,
+                x=X,
+                y=Y,
+                #ax=ax,
+                scatter=True,
+                color=color,
+                ci=95,
+                line_kws={'lw': 2, 'color': 'black'},
+                scatter_kws={'s': 40,
+                             'edgecolor': 'white',
+                             'alpha': 1.0},
+                truncate=False)
+    
+    ax.grid(False)
+    ax.minorticks_off()
+    ax.text(0.05, 0.95,
+                f'R: {mean_r:.3f}',
+                transform=ax.transAxes,
+                fontsize=22,
+                verticalalignment='top',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
+    
+    plt.xlabel(xlabel=X_name, fontsize=24)
+    plt.ylabel(ylabel=Y_name, fontsize=24)
+    plt.tick_params(axis='both', which='minor', labelsize=18)
+    if title:
+        ax.set_title(title, fontsize=24)
+    if filename:
+        plt.savefig(plots_path/f'{filename}_{observation}_{X}_{Y}.svg', dpi=300, bbox_inches='tight')
+        plt.savefig(plots_path/f'{filename}_{observation}_{X}_{Y}.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+def histogram(adata, column, resolution, bins, color, limit, size_x, size_y, x_label, threshold):
+    fluo = adata.obs[column].values #get fluorescence values for all cells 
+    gaussian = GaussianMixture(n_components=2).fit(fluo.reshape(-1, 1))
+    # Evaluate fluorescence distribution
+    x = np.linspace(fluo.min(), fluo.max(), resolution)
+    y = np.exp(gaussian.score_samples(x.reshape(-1, 1)))
+    
+    # Plot histograms and gaussian curves
+    hist_counts, bins = np.histogram(fluo, bins=bins)
+    scaling_factor = hist_counts.max() / y.max()
+    y_scaled = y * scaling_factor
+    # Define the y-axis break point
+    upper_limit = hist_counts.max()
+    lower_limit = np.percentile(hist_counts, limit)  # adjust if needed
+    
+    # Create subplots: two rows, shared x-axis
+    fig, (ax_top, ax_bottom) = plt.subplots(
+        2, 1, sharex=True, figsize=(size_x, size_y), gridspec_kw={'height_ratios': [0.5, 1.0]})
+    
+    # Top plot: focus on high range
+    sns.histplot(fluo, bins=bins, edgecolor='black', color=color, ax=ax_top, kde=False)
+    ax_top.plot(x, y_scaled, color="black", lw=1)
+    ax_top.axvline(x=threshold, color='red', linestyle='--', lw=1, label='threshold')
+    ax_top.set_ylim(lower_limit, upper_limit * 1.1)
+    ax_top.spines['bottom'].set_visible(False)
+    ax_top.tick_params(labelbottom=False, labelsize=18)
+    ax_top.legend()  # or ax_bottom.legend(), depending on where you want it
+
+    # Bottom plot: focus on low range
+    sns.histplot(fluo, bins=bins, edgecolor='black', color=color, ax=ax_bottom, kde=False)
+    ax_bottom.plot(x, y_scaled, color="black", lw=1)
+    ax_bottom.axvline(x=threshold, color='red', linestyle='--', lw=1)
+    ax_bottom.set_ylim(0, lower_limit)
+    ax_bottom.spines['top'].set_visible(False)
+    ax_bottom.tick_params(labelsize=18)
+    
+    # Diagonal lines to show the break
+    d = .015  # size of diagonal lines
+    kwargs = dict(transform=ax_top.transAxes, color='k', clip_on=False, lw=1.5)
+    ax_top.plot((-d, +d), (-d, +d), **kwargs)        # top left diagonal
+    ax_top.plot((1 - d, 1 + d), (-d, +d), **kwargs)  # top right diagonal
+    
+    kwargs.update(transform=ax_bottom.transAxes)  # switch to bottom axes
+    ax_bottom.plot((-d, +d), (1 - d, 1 + d), **kwargs)  # bottom left diagonal
+    ax_bottom.plot((1 - d, 1 + d), (1 - d, 1 + d), **kwargs)  # bottom right diagonal
+    
+    # Labels and layout
+    ax_bottom.set_xlabel(f'{x_label}', fontsize=22)
+    ax_top.set_ylabel('')
+    ax_bottom.set_ylabel('Cell Count', fontsize=22)
+    plt.tight_layout()
+    plt.show()
+    return fig

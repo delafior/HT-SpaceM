@@ -7,6 +7,14 @@ from scipy import stats
 import warnings
 from typing import List
 from pathlib import Path
+from scipy import stats
+from sklearn.mixture import GaussianMixture
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import StratifiedKFold
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, f1_score
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 def calculate_mean_intrareplicate(adata: sc.AnnData, 
                                   column: str, 
@@ -140,7 +148,7 @@ def compile_differential_analysis(adata: sc.AnnData, column: str, reference: str
 def checking_isomers(bulk: pd.DataFrame, SC: pd.DataFrame):
     #checking the presence of isomers (2 columns with same formula) 
     cols = pd.Series(bulk.columns) #listing column names of bulk data
-    #renaming duplicates present in the bulk dataset with .1, .2 (per order of appearance
+    #renaming duplicates present in the bulk dataset with .1, .2 (per order of appearance)
     for dup in bulk.columns[bulk.columns.duplicated(keep = False)]:
         cols[bulk.columns.get_loc(dup)] = ([dup + '.' + str(d_idx)
                                             if d_idx !=0
@@ -316,3 +324,75 @@ def insert_set(data, class_set, ion):
         data[class_set] = frozenset({ion})
     else:
         data[class_set] = data[class_set].union(frozenset({ion}))
+    return
+
+def fluo_processing(adata, fluo_column, resolution, plot_figure, bins=None, color=None, limit=None):
+    fluo = adata.obs[fluo_column].values #get fluorescence values for all cells 
+    gaussian = GaussianMixture(n_components=2).fit(fluo.reshape(-1, 1))
+    # Evaluate fluorescence distribution
+    x = np.linspace(fluo.min(), fluo.max(), resolution)
+    y = np.exp(gaussian.score_samples(x.reshape(-1, 1)))
+    # Find local valley
+    minima = np.where((y[:-2] > y[1:-1]) & (y[1:-1] < y[2:]))[0] + 1
+    threshold = x[minima[-1]]
+    if 'condition' not in adata.obs.columns:
+        adata.obs['condition'] = 'NCI-H460'
+        # Assign 'NIH3T3' to cells where the GFP intensity is > threshold
+        adata.obs.loc[adata.obs[fluo_column] > threshold, 'condition'] = 'NIH3T3'
+        counts = adata.obs['condition'].value_counts()
+        NIH3T3_count = counts.get('NIH3T3', 0)
+        NCIH460_count = counts.get('NCI-H460', 0)
+        print(f'NIH3T3: {NIH3T3_count}, NCI-H460: {NCIH460_count}')
+    else:
+        counts = adata.obs['condition'].value_counts()
+        NIH3T3_count = counts.get('NIH3T3', 0)
+        NCIH460_count = counts.get('NCI-H460', 0)
+        print(f'NIH3T3: {NIH3T3_count}, NCI-H460: {NCIH460_count}')
+    
+    if plot_figure is True:
+        # Plot histograms and gaussian curves
+        hist_counts, bins = np.histogram(fluo, bins=bins)
+        scaling_factor = hist_counts.max() / y.max()
+        y_scaled = y * scaling_factor
+        # Define the y-axis break point
+        upper_limit = hist_counts.max()
+        lower_limit = np.percentile(hist_counts, limit)  # adjust if needed
+        
+        # Create subplots: two rows, shared x-axis
+        fig, (ax_top, ax_bottom) = plt.subplots(
+            2, 1, sharex=True, figsize=(5, 4), gridspec_kw={'height_ratios': [0.5, 1.0]})
+        
+        # Top plot: focus on high range
+        sns.histplot(fluo, bins=bins, edgecolor='black', color=color, ax=ax_top, kde=False)
+        ax_top.plot(x, y_scaled, color="black", lw=1)
+        ax_top.axvline(x=threshold, color='red', linestyle='--', lw=1, label='threshold')
+        ax_top.set_ylim(lower_limit, upper_limit * 1.1)
+        ax_top.spines['bottom'].set_visible(False)
+        ax_top.tick_params(labelbottom=False, labelsize=14)
+        ax_top.legend()  # or ax_bottom.legend(), depending on where you want it
+
+        # Bottom plot: focus on low range
+        sns.histplot(fluo, bins=bins, edgecolor='black', color=color, ax=ax_bottom, kde=False)
+        ax_bottom.plot(x, y_scaled, color="black", lw=1)
+        ax_bottom.axvline(x=threshold, color='red', linestyle='--', lw=1)
+        ax_bottom.set_ylim(0, lower_limit)
+        ax_bottom.spines['top'].set_visible(False)
+        ax_bottom.tick_params(labelsize=14)
+        
+        # Diagonal lines to show the break
+        d = .015  # size of diagonal lines
+        kwargs = dict(transform=ax_top.transAxes, color='k', clip_on=False, lw=1.5)
+        ax_top.plot((-d, +d), (-d, +d), **kwargs)        # top left diagonal
+        ax_top.plot((1 - d, 1 + d), (-d, +d), **kwargs)  # top right diagonal
+        
+        kwargs.update(transform=ax_bottom.transAxes)  # switch to bottom axes
+        ax_bottom.plot((-d, +d), (1 - d, 1 + d), **kwargs)  # bottom left diagonal
+        ax_bottom.plot((1 - d, 1 + d), (1 - d, 1 + d), **kwargs)  # bottom right diagonal
+        
+        # Labels and layout
+        ax_bottom.set_xlabel('GFP Intensity', fontsize=16)
+        ax_top.set_ylabel('')
+        ax_bottom.set_ylabel('Cell Count', fontsize=16)
+        plt.tight_layout()
+        plt.show()
+        return fig
